@@ -10,6 +10,7 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -25,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+import rikka.shizuku.Shizuku
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -64,14 +66,14 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
     private var pauseStartedAt = 0L
     private var ticker: Job? = null
 
-    // Для автоматической записи звонков (вызывается из сервиса)
     private var isCallRecording = false
+    private var useShizukuForCall = false
 
     init {
         reload()
     }
 
-    // ---------- Ручное управление (диктофон) ----------
+    // ---------- Ручной диктофон ----------
 
     fun startRecording(context: Context) {
         if (isRecording) return
@@ -81,7 +83,7 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         }
         val file = createNewFile() ?: return
         try {
-            recorder = newRecorder(file).also { it.prepare(); it.start() }
+            recorder = newRecorder(file, useShizuku = false).also { it.prepare(); it.start() }
             currentFile = file
             isRecording = true
             isPaused = false
@@ -120,13 +122,14 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         context.stopService(Intent(context, RecordingService::class.java))
     }
 
-    // ---------- Автоматическая запись звонков (вызывается из сервиса) ----------
+    // ---------- Автозапись звонков (вызывается из сервиса) ----------
 
     companion object {
         private var viewModelInstance: RecorderViewModel? = null
 
-        fun startCallRecording(context: Context) {
+        fun startCallRecording(context: Context, useShizuku: Boolean = false) {
             val vm = viewModelInstance ?: return
+            vm.useShizukuForCall = useShizuku
             vm.startCallRecordingInternal(context)
         }
 
@@ -147,7 +150,7 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         if (isRecording) return
         val file = createNewFile() ?: return
         try {
-            recorder = newRecorder(file).also { it.prepare(); it.start() }
+            recorder = newRecorder(file, useShizuku = useShizukuForCall).also { it.prepare(); it.start() }
             currentFile = file
             isRecording = true
             isPaused = false
@@ -244,15 +247,25 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
     }
 
     @Suppress("DEPRECATION")
-    private fun newRecorder(file: File): MediaRecorder =
-        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(getApplication()) else MediaRecorder()).apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
+    private fun newRecorder(file: File, useShizuku: Boolean): MediaRecorder {
+        // Определяем источник аудио
+        val audioSource = if (useShizuku && Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            Log.d("RecorderVM", "Using VOICE_CALL via Shizuku")
+            MediaRecorder.AudioSource.VOICE_CALL
+        } else {
+            Log.d("RecorderVM", "Using MIC (Shizuku not available)")
+            MediaRecorder.AudioSource.MIC
+        }
+
+        return (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(getApplication()) else MediaRecorder()).apply {
+            setAudioSource(audioSource)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             setAudioSamplingRate(44_100)
             setAudioEncodingBitRate(128_000)
             setOutputFile(file.absolutePath)
         }
+    }
 
     private fun releaseRecorder() {
         recorder?.runCatching { release() }

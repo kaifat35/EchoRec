@@ -25,7 +25,10 @@ import java.util.Locale
 fun RecorderApp(
     microphoneGranted: Boolean,
     phoneStateGranted: Boolean,
+    shizukuGranted: Boolean,
     requestPermissions: () -> Unit,
+    requestShizukuPermission: () -> Unit,
+    showShizukuHelp: () -> Unit,
     model: RecorderViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -64,10 +67,17 @@ fun RecorderApp(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Карточка состояния разрешений и автоматической записи
+            // Карточка разрешений
             StatusCard(microphoneGranted, phoneStateGranted, requestPermissions)
 
-            // Панель записи (визуализатор, время, кнопка остановки)
+            // Карточка Shizuku
+            ShizukuCard(
+                shizukuGranted,
+                onRequest = requestShizukuPermission,
+                onHelp = showShizukuHelp
+            )
+
+            // Панель записи
             RecordingPanel(model, context)
 
             // Список записей
@@ -112,6 +122,33 @@ private fun StatusCard(
                 modifier = Modifier.weight(1f)
             )
             if (!allGranted) Button(requestPermissions) { Text("Разрешить") }
+        }
+    }
+}
+
+@Composable
+private fun ShizukuCard(granted: Boolean, onRequest: () -> Unit, onHelp: () -> Unit) {
+    val (text, buttonText, action) = if (granted) {
+        Triple("✅ Shizuku: доступ предоставлен", null, null)
+    } else {
+        Triple("⚠️ Shizuku: требуется активация", "Активировать", onRequest)
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (granted) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+        )
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text, modifier = Modifier.weight(1f))
+            if (!granted) {
+                Button(onHelp) { Text("Как установить") }
+                Spacer(Modifier.width(8.dp))
+                Button(onRequest) { Text(buttonText!!) }
+            }
         }
     }
 }

@@ -5,22 +5,20 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import rikka.shizuku.Shizuku
 
-/**
- * Фоновый сервис, который слушает состояние телефона и автоматически
- * запускает/останавливает запись при начале/окончании звонка.
- * Для записи используется микрофон с принудительным включением громкой связи.
- */
 class CallRecorderService : LifecycleService() {
-
+    private val TAG = "CallRecorderService"
     private lateinit var telephonyManager: TelephonyManager
     private lateinit var audioManager: AudioManager
     private var wasSpeakerphoneOn = false
@@ -33,10 +31,12 @@ class CallRecorderService : LifecycleService() {
         val callState: StateFlow<CallState> = _callState
 
         fun start(context: Context) {
+            Log.d("CallRecorderService", "start() called")
             context.startForegroundService(Intent(context, CallRecorderService::class.java))
         }
 
         fun stop(context: Context) {
+            Log.d("CallRecorderService", "stop() called")
             context.stopService(Intent(context, CallRecorderService::class.java))
         }
     }
@@ -45,24 +45,29 @@ class CallRecorderService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "onCreate")
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ожидание звонка"))
 
-        // Регистрируем слушатель состояния телефона
-        telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+        try {
+            telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+            Log.d(TAG, "PhoneStateListener registered")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register PhoneStateListener", e)
+        }
     }
 
     override fun onDestroy() {
+        Log.d(TAG, "onDestroy")
         super.onDestroy()
         telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
-        // Возвращаем громкую связь в исходное состояние, если она была изменена
         if (isInCall) {
             try {
                 audioManager.setSpeakerphoneOn(wasSpeakerphoneOn)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "Error restoring speakerphone", e)
             }
         }
         _callState.value = CallState.IDLE
@@ -70,39 +75,46 @@ class CallRecorderService : LifecycleService() {
 
     private val phoneStateListener = object : PhoneStateListener() {
         override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+            Log.d(TAG, "onCallStateChanged: state=$state, phoneNumber=$phoneNumber")
             when (state) {
                 TelephonyManager.CALL_STATE_IDLE -> {
                     _callState.value = CallState.IDLE
                     if (isInCall) {
-                        // Звонок завершён – останавливаем запись
                         isInCall = false
                         try {
                             audioManager.setSpeakerphoneOn(wasSpeakerphoneOn)
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e(TAG, "Error restoring speakerphone", e)
                         }
                         RecorderViewModel.stopRecordingIfActive(applicationContext)
                         updateNotification("Ожидание звонка")
+                        Log.d(TAG, "Call ended, recording stopped")
                     }
                 }
                 TelephonyManager.CALL_STATE_RINGING -> {
                     _callState.value = CallState.RINGING
                     updateNotification("Входящий звонок...")
+                    Log.d(TAG, "Ringing")
                 }
                 TelephonyManager.CALL_STATE_OFFHOOK -> {
                     _callState.value = CallState.OFFHOOK
                     if (!isInCall) {
-                        // Начало разговора – запускаем запись
                         isInCall = true
                         wasSpeakerphoneOn = audioManager.isSpeakerphoneOn
-                        // Включаем громкую связь для лучшей записи собеседника
                         try {
                             audioManager.setSpeakerphoneOn(true)
+                            Log.d(TAG, "Speakerphone forced on")
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e(TAG, "Error enabling speakerphone", e)
                         }
-                        RecorderViewModel.startCallRecording(applicationContext)
+
+                        // Проверяем доступность Shizuku
+                        val useShizuku = Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+                        Log.d(TAG, "Shizuku available: $useShizuku")
+                        RecorderViewModel.startCallRecording(applicationContext, useShizuku)
+
                         updateNotification("Идёт запись звонка")
+                        Log.d(TAG, "Call started, recording started")
                     }
                 }
             }
@@ -112,7 +124,11 @@ class CallRecorderService : LifecycleService() {
     private fun updateNotification(text: String) {
         val notification = buildNotification(text)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        try {
+            manager.notify(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update notification", e)
+        }
     }
 
     private fun buildNotification(text: String): Notification {
@@ -126,13 +142,18 @@ class CallRecorderService : LifecycleService() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Служба записи звонков",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            try {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Служба записи звонков",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.createNotificationChannel(channel)
+                Log.d(TAG, "Notification channel created")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create notification channel", e)
+            }
         }
     }
 }
