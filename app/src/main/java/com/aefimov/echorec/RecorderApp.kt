@@ -16,7 +16,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
-@Composable fun RecorderApp(state: ShizukuState, requestPermissions: () -> Unit, requestShizuku: () -> Unit, model: RecorderViewModel = viewModel()) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RecorderApp(
+    state: ShizukuState,
+    requestPermissions: () -> Unit,
+    requestShizuku: () -> Unit,
+    model: RecorderViewModel = viewModel(),
+) {
     val context = LocalContext.current
     var showShizukuHelp by remember { mutableStateOf(false) }
     model.message?.let { text -> LaunchedEffect(text) { /* Toast is emitted by model; consume so it is not repeated. */ model.consumeMessage() } }
@@ -25,7 +32,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
             ShizukuCard(state, { if (state == ShizukuState.UNAVAILABLE) showShizukuHelp = true else requestShizuku() })
             if (model.isRecording) { AudioVisualizer(model.audioLevel, Modifier.fillMaxWidth().height(100.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text(if (model.isPaused) "Пауза ${formatTime(model.recordingTime)}" else "Запись ${formatTime(model.recordingTime)}", style = MaterialTheme.typography.titleMedium); Button(onClick = { model.stopRecording(context) }) { Icon(Icons.Default.Stop, null); Spacer(Modifier.width(6.dp)); Text("Остановить") } } } else Card(Modifier.fillMaxWidth()) { Text("Готов к записи с микрофона", Modifier.padding(24.dp)) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Записи (${model.recordings.size})", style = MaterialTheme.typography.titleLarge); if (model.recordings.isNotEmpty()) TextButton(model::deleteAll) { Text("Очистить") } }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(model.recordings, key = { it.id }) { record -> RecordingRow(record, model.playingId == record.id, { model.togglePlayback(record) }, { model.share(context, record) }, { model.delete(record) }) } }
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items<Recording>(
+                    items = model.recordings,
+                    key = { recording -> recording.id },
+                ) { record ->
+                    RecordingRow(
+                        record = record,
+                        playing = model.playingId == record.id,
+                        play = { model.togglePlayback(record) },
+                        share = { model.share(context, record) },
+                        delete = { model.delete(record) },
+                    )
+                }
+            }
             TextButton(requestPermissions) { Text("Проверить разрешения") }
         }
     }
