@@ -1,52 +1,53 @@
 package com.aefimov.echorec
 
+import android.Manifest
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.app.Application
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
-import android.widget.Toast
-import androidx.annotation.RequiresApi
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 
-data class Recording(
-    val id: String,
-    val file: File,
-    val name: String,
-    val date: String,
-    val formattedSize: String,
-    val duration: Long
-)
+data class Recording(val id: String, val file: File, val name: String, val date: String, val formattedSize: String, val duration: Long)
 
-/** Owns MediaRecorder/MediaPlayer so a configuration change does not leak either object. */
-@RequiresApi(Build.VERSION_CODES.Q)
+/**
+ * Управляет ресурсами записи и воспроизведения. Файлы находятся в app-specific Music,
+ * поэтому не требуют разрешений на хранилище и удаляются вместе с приложением.
+ */
 class RecorderViewModel(application: Application) : AndroidViewModel(application) {
-    private val directory get() = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MUSIC)
-    var recordings by androidx.compose.runtime.mutableStateOf<List<Recording>>(emptyList()); private set
-    var isRecording by androidx.compose.runtime.mutableStateOf(false); private set
-    var isPaused by androidx.compose.runtime.mutableStateOf(false); private set
-    var recordingTime by androidx.compose.runtime.mutableLongStateOf(0L); private set
-    var audioLevel by androidx.compose.runtime.mutableFloatStateOf(0f); private set
-    var message by androidx.compose.runtime.mutableStateOf<String?>(null); private set
-    var playingId by androidx.compose.runtime.mutableStateOf<String?>(null); private set
+    private val directory: File?
+        get() = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MUSIC)
 
+    var recordings by mutableStateOf<List<Recording>>(emptyList()); private set
+    var isRecording by mutableStateOf(false); private set
+    var isPaused by mutableStateOf(false); private set
+    var recordingTime by mutableLongStateOf(0L); private set
+    var audioLevel by mutableFloatStateOf(0f); private set
+    var playingId by mutableStateOf<String?>(null); private set
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val messages: SharedFlow<String> = _messages
     private var recorder: MediaRecorder? = null
     private var player: MediaPlayer? = null
     private var currentFile: File? = null
@@ -54,175 +55,138 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
     private var pauseStartedAt = 0L
     private var ticker: Job? = null
 
-    init {
-        reload()
-    }
+    init { reload() }
 
-    /** Starts AAC/M4A recording. VOICE_CALL needs a separate privileged capture service; Shizuku alone is not that service. */
-    fun startRecording(context: Context, shizukuGranted: Boolean) {
+    /** Создаёт M4A/AAC из [MediaRecorder.AudioSource.MIC] после явного действия пользователя. */
+    fun startRecording(context: Context) {
         if (isRecording) return
-        if (ContextCompat.checkSelfPermission(
-                context,
-                android.Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            notify("Нужно разрешение на запись аудио")
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            message("Нужно разрешение на запись аудио")
             return
         }
-        val outputDir = directory ?: run { notify("Не удалось открыть папку для записей"); return }
-        if (!outputDir.exists() && !outputDir.mkdirs()) {
-            notify("Не удалось создать папку для записей"); return
-        }
-        val file = File(
-            outputDir,
-            "Call_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
-        )
+        val outputDir = directory ?: return message("Не удалось открыть папку для записей")
+        if (!outputDir.exists() && !outputDir.mkdirs()) return message("Не удалось создать папку для записей")
+        val file = File(outputDir, "Recording_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a")
         try {
-            // A normal app is deliberately limited to MIC on Android 10+. Shizuku permission only permits Binder IPC.
-            val source = MediaRecorder.AudioSource.MIC
-            recorder = createRecorder(source, file).also { it.prepare(); it.start() }
+            recorder = newRecorder(file).also { it.prepare(); it.start() }
             currentFile = file
-            isRecording = true; isPaused = false; recordingTime = 0; startedAt =
-                System.currentTimeMillis()
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, RecordingService::class.java)
-            )
+            isRecording = true
+            isPaused = false
+            recordingTime = 0
+            startedAt = System.currentTimeMillis()
+            // Сервис запускается сразу после старта, чтобы Android не остановил микрофон в фоне.
+            ContextCompat.startForegroundService(context, Intent(context, RecordingService::class.java))
             startTicker()
-            if (shizukuGranted) notify("Shizuku подключён. Для VOICE_CALL нужен отдельный привилегированный сервис захвата; записывается микрофон.")
         } catch (error: Exception) {
-            recorder?.release(); recorder = null; file.delete()
-            notify("Не удалось начать запись: ${error.message ?: "неизвестная ошибка"}")
+            recorder?.release()
+            recorder = null
+            currentFile = null
+            file.delete()
+            message("Не удалось начать запись: ${error.message ?: "неизвестная ошибка"}")
         }
     }
 
     @Suppress("DEPRECATION")
-    private fun createRecorder(source: Int, file: File): MediaRecorder =
-        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            MediaRecorder(getApplication())
-        } else {
-            MediaRecorder()
-        }).apply {
-            setAudioSource(source)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioSamplingRate(44_100)
-            setAudioEncodingBitRate(128_000)
-            setOutputFile(file.absolutePath)
-        }
+    private fun newRecorder(file: File): MediaRecorder = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(getApplication()) else MediaRecorder()).apply {
+        setAudioSource(MediaRecorder.AudioSource.MIC)
+        setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        setAudioSamplingRate(44_100)
+        setAudioEncodingBitRate(128_000)
+        setOutputFile(file.absolutePath)
+    }
 
     fun pauseRecording() = runCatching { recorder?.pause() }.onSuccess {
-        if (isRecording) {
-            isPaused = true; pauseStartedAt = System.currentTimeMillis()
-        }
-    }.onFailure { notify("Не удалось поставить запись на паузу: ${it.message}") }
+        if (isRecording) { isPaused = true; pauseStartedAt = System.currentTimeMillis() }
+    }.onFailure { message("Не удалось поставить запись на паузу: ${it.message}") }
 
     fun resumeRecording() = runCatching { recorder?.resume() }.onSuccess {
         if (isRecording && isPaused) {
-            startedAt += System.currentTimeMillis() - pauseStartedAt; isPaused = false
+            startedAt += System.currentTimeMillis() - pauseStartedAt
+            isPaused = false
         }
-    }.onFailure { notify("Не удалось возобновить запись: ${it.message}") }
+    }.onFailure { message("Не удалось возобновить запись: ${it.message}") }
 
+    /** Останавливает контейнер до освобождения recorder: иначе M4A не будет пригоден к воспроизведению. */
     fun stopRecording(context: Context) {
         if (!isRecording) return
-        ticker?.cancel(); audioLevel = 0f
+        ticker?.cancel()
         val file = currentFile
-        runCatching { recorder?.stop() }.onFailure { notify("Запись слишком короткая или повреждена: ${it.message}") }
-        recorder?.release(); recorder = null; currentFile = null
-        isRecording = false; isPaused = false; recordingTime = 0
+        val stopped = runCatching { recorder?.stop() }.isSuccess
+        recorder?.release()
+        recorder = null
+        currentFile = null
+        isRecording = false
+        isPaused = false
+        recordingTime = 0
+        audioLevel = 0f
         context.stopService(Intent(context, RecordingService::class.java))
-        if (file != null && file.length() > 0) {
-            reload(); notify("Запись сохранена")
-        } else file?.delete()
+        if (stopped && file != null && file.length() > 0L) {
+            reload()
+            message("Запись сохранена")
+        } else {
+            file?.delete()
+            message("Запись слишком короткая или повреждена")
+        }
     }
 
     fun togglePlayback(record: Recording) {
-        if (playingId == record.id) {
-            stopPlayback(); return
-        }
+        if (playingId == record.id) return stopPlayback()
         stopPlayback()
         runCatching {
-            MediaPlayer().apply { setDataSource(record.file.absolutePath); prepare(); setOnCompletionListener { stopPlayback() }; start() }
+            MediaPlayer().apply {
+                setDataSource(record.file.absolutePath)
+                setOnCompletionListener { stopPlayback() }
+                prepare()
+                start()
+            }
         }.onSuccess { player = it; playingId = record.id }
-            .onFailure { notify("Не удалось воспроизвести запись: ${it.message}") }
+            .onFailure { message("Не удалось воспроизвести запись: ${it.message}") }
     }
 
-    fun stopPlayback() {
-        player?.runCatching { stop() }; player?.release(); player = null; playingId = null
-    }
+    fun stopPlayback() { player?.runCatching { stop() }; player?.release(); player = null; playingId = null }
+    fun delete(record: Recording) { if (playingId == record.id) stopPlayback(); if (record.file.delete()) reload() else message("Не удалось удалить файл") }
+    fun deleteAll() { stopPlayback(); recordings.forEach { it.file.delete() }; reload() }
 
-    fun delete(record: Recording) {
-        stopPlayback(); if (!record.file.delete()) notify("Не удалось удалить файл") else reload()
-    }
-
-    fun deleteAll() {
-        recordings.forEach { it.file.delete() }; stopPlayback(); reload()
-    }
-
+    /** Передаёт безопасный content:// URI вместо пути к локальному файлу. */
     fun share(context: Context, record: Recording) = runCatching {
-        val uri =
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", record.file)
-        context.startActivity(
-            Intent.createChooser(
-                Intent(Intent.ACTION_SEND).setType("audio/mp4").putExtra(Intent.EXTRA_STREAM, uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                "Поделиться записью"
-            )
-        )
-    }.onFailure { notify("Не удалось отправить запись: ${it.message}") }
-
-    fun consumeMessage() {
-        message = null
-    }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", record.file)
+        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("audio/mp4").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Поделиться записью"))
+    }.onFailure { message("Не удалось отправить запись: ${it.message}") }
 
     private fun startTicker() {
-        ticker?.cancel(); ticker = viewModelScope.launch {
-            while (isActive && isRecording) {
+        ticker?.cancel()
+        ticker = viewModelScope.launch {
+            while (isRecording) {
                 if (!isPaused) {
-                    recordingTime = System.currentTimeMillis() - startedAt; audioLevel =
-                        (recorder?.maxAmplitude ?: 0).coerceIn(0, 32_767) / 32_767f
-                }; delay(75)
+                    recordingTime = System.currentTimeMillis() - startedAt
+                    audioLevel = (recorder?.maxAmplitude ?: 0).coerceIn(0, 32_767) / 32_767f
+                }
+                kotlinx.coroutines.delay(75)
             }
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     private fun reload() {
-        recordings = directory?.listFiles { file -> file.extension.equals("m4a", true) }
-            ?.sortedByDescending { it.lastModified() }?.map { file ->
-            Recording(
-                file.absolutePath,
-                file,
-                file.nameWithoutExtension,
-                SimpleDateFormat(
-                    "dd.MM.yyyy HH:mm",
-                    Locale.getDefault()
-                ).format(Date(file.lastModified())),
-                size(file.length()),
-                duration(file)
-            )
-        }.orEmpty()
+        recordings = directory?.listFiles { file -> file.extension.equals("m4a", ignoreCase = true) }
+            ?.sortedByDescending(File::lastModified)
+            ?.map { file -> Recording(file.absolutePath, file, file.nameWithoutExtension, SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(file.lastModified())), size(file.length()), duration(file)) }
+            .orEmpty()
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     private fun duration(file: File): Long = runCatching {
-        MediaMetadataRetriever().use {
-            it.setDataSource(file.absolutePath); it.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            ?.toLong() ?: 0L
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L
         }
-    }.getOrDefault(0)
+    }.getOrDefault(0L)
 
-    private fun size(bytes: Long) = if (bytes < 1_048_576) String.format(
-        Locale.US,
-        "%.1f KB",
-        bytes / 1024.0
-    ) else String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
-
-    private fun notify(text: String) {
-        message = text; Toast.makeText(getApplication(), text, Toast.LENGTH_LONG).show()
-    }
+    private fun size(bytes: Long): String = if (bytes < 1_048_576) String.format(Locale.US, "%.1f KB", bytes / 1024.0) else String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+    private fun message(text: String) { _messages.tryEmit(text) }
 
     override fun onCleared() {
-        ticker?.cancel(); recorder?.release(); stopPlayback()
+        ticker?.cancel()
+        if (isRecording) stopRecording(getApplication())
+        stopPlayback()
     }
 }
