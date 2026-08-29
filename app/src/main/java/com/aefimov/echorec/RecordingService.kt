@@ -8,12 +8,15 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 
-/** Keeps the microphone recording visible and less likely to be killed in background. */
+/**
+ * Показывает постоянное уведомление, пока [RecorderViewModel] использует микрофон.
+ * Это обязательное требование Android для записи в фоне, а не скрытая запись звонка.
+ */
 class RecordingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onCreate() {
         super.onCreate(); if (Build.VERSION.SDK_INT >= 26) (getSystemService(NotificationManager::class.java)).createNotificationChannel(
-            NotificationChannel(CHANNEL, "Запись звонков", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL, "Запись с микрофона", NotificationManager.IMPORTANCE_LOW)
         )
     }
 

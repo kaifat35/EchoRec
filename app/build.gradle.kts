@@ -51,17 +51,7 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-
-
-    implementation (libs.androidx.lifecycle.viewmodel.compose)
-    implementation (libs.androidx.compose.material.icons.extended)
-
-
-       // Permissions
-    implementation(libs.accompanist.permissions)
-       // Shizuku - встроенная библиотека
-    implementation(libs.api)
-    implementation(libs.provider)
-       // Audio
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.kotlinx.coroutines.android)
 }
