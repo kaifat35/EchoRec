@@ -1,43 +1,13 @@
 package com.aefimov.echorec
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -50,13 +20,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.util.Locale
 
-/** Главный экран: запись с микрофона и локальный список завершённых файлов. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecorderApp(
     microphoneGranted: Boolean,
+    phoneStateGranted: Boolean,
     requestPermissions: () -> Unit,
-    model: RecorderViewModel = viewModel(),
+    model: RecorderViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -78,39 +48,41 @@ fun RecorderApp(
                         model.isPaused -> model.resumeRecording()
                         else -> model.pauseRecording()
                     }
-                },
+                }
             ) {
                 Icon(
                     imageVector = if (model.isRecording && !model.isPaused) Icons.Default.Pause else Icons.Default.Mic,
-                    contentDescription = if (model.isRecording) "Поставить запись на паузу" else "Начать запись",
+                    contentDescription = if (model.isRecording) "Пауза" else "Запись"
                 )
             }
-        },
+        }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            PermissionCard(microphoneGranted, requestPermissions)
+            // Карточка состояния разрешений и автоматической записи
+            StatusCard(microphoneGranted, phoneStateGranted, requestPermissions)
+
+            // Панель записи (визуализатор, время, кнопка остановки)
             RecordingPanel(model, context)
+
+            // Список записей
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(
-                    "Записи (${model.recordings.size})",
-                    style = MaterialTheme.typography.titleLarge
-                )
+                Text("Записи (${model.recordings.size})", style = MaterialTheme.typography.titleLarge)
                 if (model.recordings.isNotEmpty()) TextButton(model::deleteAll) { Text("Очистить") }
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(model.recordings, key = Recording::id) { recording ->
+                items(model.recordings, key = Recording::id) { record ->
                     RecordingRow(
-                        record = recording,
-                        playing = model.playingId == recording.id,
-                        play = { model.togglePlayback(recording) },
-                        share = { model.share(context, recording) },
-                        delete = { model.delete(recording) },
+                        record = record,
+                        playing = model.playingId == record.id,
+                        play = { model.togglePlayback(record) },
+                        share = { model.share(context, record) },
+                        delete = { model.delete(record) }
                     )
                 }
             }
@@ -119,26 +91,27 @@ fun RecorderApp(
 }
 
 @Composable
-private fun PermissionCard(granted: Boolean, request: () -> Unit) {
+private fun StatusCard(
+    microphoneGranted: Boolean,
+    phoneStateGranted: Boolean,
+    requestPermissions: () -> Unit
+) {
+    val allGranted = microphoneGranted && phoneStateGranted
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (granted) Color(0xFFE8F5E9) else Color(
-                0xFFFFF3E0
-            )
-        ),
+            containerColor = if (allGranted) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+        )
     ) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
+            Modifier.fillMaxWidth().padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = if (granted) "Микрофон: разрешён" else "Для записи нужно разрешение на микрофон",
-                modifier = Modifier.weight(1f),
+                text = if (allGranted) "✅ Все разрешения получены" else "⚠️ Требуются разрешения",
+                modifier = Modifier.weight(1f)
             )
-            if (!granted) Button(request) { Text("Разрешить") }
+            if (!allGranted) Button(requestPermissions) { Text("Разрешить") }
         }
     }
 }
@@ -147,32 +120,21 @@ private fun PermissionCard(granted: Boolean, request: () -> Unit) {
 private fun RecordingPanel(model: RecorderViewModel, context: android.content.Context) {
     if (!model.isRecording) {
         Card(Modifier.fillMaxWidth()) {
-            Text(
-                "Готов к записи с микрофона",
-                Modifier.padding(24.dp)
-            )
+            Text("Готов к записи", Modifier.padding(24.dp))
         }
         return
     }
-    AudioVisualizer(
-        model.audioLevel, Modifier
-            .fillMaxWidth()
-            .height(100.dp)
-    )
+    AudioVisualizer(model.audioLevel, Modifier.fillMaxWidth().height(100.dp))
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            if (model.isPaused) "Пауза ${formatTime(model.recordingTime)}" else "Запись ${
-                formatTime(
-                    model.recordingTime
-                )
-            }"
+            if (model.isPaused) "Пауза ${formatTime(model.recordingTime)}" else "Запись ${formatTime(model.recordingTime)}"
         )
         Button(onClick = { model.stopRecording(context) }) {
-            Icon(Icons.Default.Stop, contentDescription = null)
+            Icon(Icons.Default.Stop, null)
             Spacer(Modifier.width(6.dp))
             Text("Остановить")
         }
@@ -206,16 +168,11 @@ private fun RecordingRow(
 ) {
     Card(Modifier.fillMaxWidth()) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
+            Modifier.fillMaxWidth().padding(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(play) {
-                Icon(
-                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    "Воспроизвести"
-                )
+                Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Воспроизвести")
             }
             Column(Modifier.weight(1f)) {
                 Text(record.name, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -40,10 +40,6 @@ data class Recording(
     val duration: Long
 )
 
-/**
- * Управляет ресурсами записи и воспроизведения. Файлы находятся в app-specific Music,
- * поэтому не требуют разрешений на хранилище и удаляются вместе с приложением.
- */
 class RecorderViewModel(application: Application) : AndroidViewModel(application) {
     private val directory: File?
         get() = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MUSIC)
@@ -60,6 +56,7 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val messages: SharedFlow<String> = _messages
+
     private var recorder: MediaRecorder? = null
     private var player: MediaPlayer? = null
     private var currentFile: File? = null
@@ -67,27 +64,22 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
     private var pauseStartedAt = 0L
     private var ticker: Job? = null
 
+    // Для автоматической записи звонков (вызывается из сервиса)
+    private var isCallRecording = false
+
     init {
         reload()
     }
 
-    /** Создаёт M4A/AAC из [MediaRecorder.AudioSource.MIC] после явного действия пользователя. */
+    // ---------- Ручное управление (диктофон) ----------
+
     fun startRecording(context: Context) {
         if (isRecording) return
-        if (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             message("Нужно разрешение на запись аудио")
             return
         }
-        val outputDir = directory ?: return message("Не удалось открыть папку для записей")
-        if (!outputDir.exists() && !outputDir.mkdirs()) return message("Не удалось создать папку для записей")
-        val file = File(
-            outputDir,
-            "Recording_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
-        )
+        val file = createNewFile() ?: return
         try {
             recorder = newRecorder(file).also { it.prepare(); it.start() }
             currentFile = file
@@ -95,19 +87,160 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
             isPaused = false
             recordingTime = 0
             startedAt = System.currentTimeMillis()
-            // Сервис запускается сразу после старта, чтобы Android не остановил микрофон в фоне.
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, RecordingService::class.java)
-            )
+            ContextCompat.startForegroundService(context, Intent(context, RecordingService::class.java))
             startTicker()
-        } catch (error: Exception) {
-            recorder?.release()
-            recorder = null
-            currentFile = null
+        } catch (e: Exception) {
+            releaseRecorder()
             file.delete()
-            message("Не удалось начать запись: ${error.message ?: "неизвестная ошибка"}")
+            message("Не удалось начать запись: ${e.message}")
         }
+    }
+
+    fun pauseRecording() {
+        runCatching { recorder?.pause() }.onSuccess {
+            if (isRecording) {
+                isPaused = true
+                pauseStartedAt = System.currentTimeMillis()
+            }
+        }.onFailure { message("Не удалось поставить на паузу: ${it.message}") }
+    }
+
+    fun resumeRecording() {
+        runCatching { recorder?.resume() }.onSuccess {
+            if (isRecording && isPaused) {
+                startedAt += System.currentTimeMillis() - pauseStartedAt
+                isPaused = false
+            }
+        }.onFailure { message("Не удалось возобновить: ${it.message}") }
+    }
+
+    fun stopRecording(context: Context) {
+        if (!isRecording) return
+        stopInternal()
+        context.stopService(Intent(context, RecordingService::class.java))
+    }
+
+    // ---------- Автоматическая запись звонков (вызывается из сервиса) ----------
+
+    companion object {
+        private var viewModelInstance: RecorderViewModel? = null
+
+        fun startCallRecording(context: Context) {
+            val vm = viewModelInstance ?: return
+            vm.startCallRecordingInternal(context)
+        }
+
+        fun stopRecordingIfActive(context: Context) {
+            val vm = viewModelInstance ?: return
+            if (vm.isRecording && vm.isCallRecording) {
+                vm.stopInternal()
+                context.stopService(Intent(context, RecordingService::class.java))
+            }
+        }
+
+        fun setViewModel(vm: RecorderViewModel) {
+            viewModelInstance = vm
+        }
+    }
+
+    private fun startCallRecordingInternal(context: Context) {
+        if (isRecording) return
+        val file = createNewFile() ?: return
+        try {
+            recorder = newRecorder(file).also { it.prepare(); it.start() }
+            currentFile = file
+            isRecording = true
+            isPaused = false
+            recordingTime = 0
+            startedAt = System.currentTimeMillis()
+            isCallRecording = true
+            ContextCompat.startForegroundService(context, Intent(context, RecordingService::class.java))
+            startTicker()
+        } catch (e: Exception) {
+            releaseRecorder()
+            file.delete()
+            message("Не удалось начать запись звонка: ${e.message}")
+        }
+    }
+
+    private fun stopInternal() {
+        ticker?.cancel()
+        val file = currentFile
+        val stopped = runCatching { recorder?.stop() }.isSuccess
+        releaseRecorder()
+        isRecording = false
+        isPaused = false
+        recordingTime = 0
+        audioLevel = 0f
+        isCallRecording = false
+        if (stopped && file != null && file.length() > 0L) {
+            reload()
+            message("Запись сохранена")
+        } else {
+            file?.delete()
+            message("Запись слишком короткая или повреждена")
+        }
+    }
+
+    // ---------- Воспроизведение, удаление, шаринг ----------
+
+    fun togglePlayback(record: Recording) {
+        if (playingId == record.id) return stopPlayback()
+        stopPlayback()
+        runCatching {
+            MediaPlayer().apply {
+                setDataSource(record.file.absolutePath)
+                setOnCompletionListener { stopPlayback() }
+                prepare()
+                start()
+            }
+        }.onSuccess { player = it; playingId = record.id }
+            .onFailure { message("Не удалось воспроизвести: ${it.message}") }
+    }
+
+    fun stopPlayback() {
+        player?.runCatching { stop() }
+        player?.release()
+        player = null
+        playingId = null
+    }
+
+    fun delete(record: Recording) {
+        if (playingId == record.id) stopPlayback()
+        if (record.file.delete()) reload() else message("Не удалось удалить файл")
+    }
+
+    fun deleteAll() {
+        stopPlayback()
+        recordings.forEach { it.file.delete() }
+        reload()
+    }
+
+    fun share(context: Context, record: Recording) = runCatching {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", record.file)
+        context.startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).setType("audio/mp4")
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                "Поделиться записью"
+            )
+        )
+    }.onFailure { message("Не удалось отправить запись: ${it.message}") }
+
+    // ---------- Вспомогательные методы ----------
+
+    private fun createNewFile(): File? {
+        val outputDir = directory ?: run {
+            message("Не удалось открыть папку для записей")
+            return null
+        }
+        if (!outputDir.exists() && !outputDir.mkdirs()) {
+            message("Не удалось создать папку для записей")
+            return null
+        }
+        val fileName = "Recording_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
+        return File(outputDir, fileName)
     }
 
     @Suppress("DEPRECATION")
@@ -121,82 +254,11 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
             setOutputFile(file.absolutePath)
         }
 
-    fun pauseRecording() = runCatching { recorder?.pause() }.onSuccess {
-        if (isRecording) {
-            isPaused = true; pauseStartedAt = System.currentTimeMillis()
-        }
-    }.onFailure { message("Не удалось поставить запись на паузу: ${it.message}") }
-
-    fun resumeRecording() = runCatching { recorder?.resume() }.onSuccess {
-        if (isRecording && isPaused) {
-            startedAt += System.currentTimeMillis() - pauseStartedAt
-            isPaused = false
-        }
-    }.onFailure { message("Не удалось возобновить запись: ${it.message}") }
-
-    /** Останавливает контейнер до освобождения recorder: иначе M4A не будет пригоден к воспроизведению. */
-    fun stopRecording(context: Context) {
-        if (!isRecording) return
-        ticker?.cancel()
-        val file = currentFile
-        val stopped = runCatching { recorder?.stop() }.isSuccess
-        recorder?.release()
+    private fun releaseRecorder() {
+        recorder?.runCatching { release() }
         recorder = null
         currentFile = null
-        isRecording = false
-        isPaused = false
-        recordingTime = 0
-        audioLevel = 0f
-        context.stopService(Intent(context, RecordingService::class.java))
-        if (stopped && file != null && file.length() > 0L) {
-            reload()
-            message("Запись сохранена")
-        } else {
-            file?.delete()
-            message("Запись слишком короткая или повреждена")
-        }
     }
-
-    fun togglePlayback(record: Recording) {
-        if (playingId == record.id) return stopPlayback()
-        stopPlayback()
-        runCatching {
-            MediaPlayer().apply {
-                setDataSource(record.file.absolutePath)
-                setOnCompletionListener { stopPlayback() }
-                prepare()
-                start()
-            }
-        }.onSuccess { player = it; playingId = record.id }
-            .onFailure { message("Не удалось воспроизвести запись: ${it.message}") }
-    }
-
-    fun stopPlayback() {
-        player?.runCatching { stop() }; player?.release(); player = null; playingId = null
-    }
-
-    fun delete(record: Recording) {
-        if (playingId == record.id) stopPlayback(); if (record.file.delete()) reload() else message(
-            "Не удалось удалить файл"
-        )
-    }
-
-    fun deleteAll() {
-        stopPlayback(); recordings.forEach { it.file.delete() }; reload()
-    }
-
-    /** Передаёт безопасный content:// URI вместо пути к локальному файлу. */
-    fun share(context: Context, record: Recording) = runCatching {
-        val uri =
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", record.file)
-        context.startActivity(
-            Intent.createChooser(
-                Intent(Intent.ACTION_SEND).setType("audio/mp4").putExtra(Intent.EXTRA_STREAM, uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                "Поделиться записью"
-            )
-        )
-    }.onFailure { message("Не удалось отправить запись: ${it.message}") }
 
     private fun startTicker() {
         ticker?.cancel()
@@ -212,23 +274,19 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun reload() {
-        recordings =
-            directory?.listFiles { file -> file.extension.equals("m4a", ignoreCase = true) }
-                ?.sortedByDescending(File::lastModified)
-                ?.map { file ->
-                    Recording(
-                        file.absolutePath,
-                        file,
-                        file.nameWithoutExtension,
-                        SimpleDateFormat(
-                            "dd.MM.yyyy HH:mm",
-                            Locale.getDefault()
-                        ).format(Date(file.lastModified())),
-                        size(file.length()),
-                        duration(file)
-                    )
-                }
-                .orEmpty()
+        recordings = directory?.listFiles { file -> file.extension.equals("m4a", ignoreCase = true) }
+            ?.sortedByDescending(File::lastModified)
+            ?.map { file ->
+                Recording(
+                    file.absolutePath,
+                    file,
+                    file.nameWithoutExtension,
+                    SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(file.lastModified())),
+                    size(file.length()),
+                    duration(file)
+                )
+            }
+            .orEmpty()
     }
 
     private fun duration(file: File): Long = runCatching {
@@ -241,11 +299,11 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         }
     }.getOrDefault(0L)
 
-    private fun size(bytes: Long): String = if (bytes < 1_048_576) String.format(
-        Locale.US,
-        "%.1f KB",
-        bytes / 1024.0
-    ) else String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+    private fun size(bytes: Long): String = if (bytes < 1_048_576) {
+        String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+    } else {
+        String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+    }
 
     private fun message(text: String) {
         _messages.tryEmit(text)
@@ -253,7 +311,12 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         ticker?.cancel()
-        if (isRecording) stopRecording(getApplication())
+        if (isRecording) stopInternal()
         stopPlayback()
+        viewModelInstance = null
+    }
+
+    init {
+        setViewModel(this)
     }
 }

@@ -13,14 +13,13 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.aefimov.echorec.ui.theme.EchoRecTheme
 
-/** Точка входа: запрашивает только те разрешения, которые действительно нужны записи. */
 class MainActivity : ComponentActivity() {
     private var microphoneGranted by mutableStateOf(false)
+    private var phoneStateGranted by mutableStateOf(false)
 
     private val permissionsLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        // Повторно читаем состояние: пользователь мог разрешить только часть запроса.
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
         updatePermissionState()
     }
 
@@ -31,6 +30,7 @@ class MainActivity : ComponentActivity() {
             EchoRecTheme {
                 RecorderApp(
                     microphoneGranted = microphoneGranted,
+                    phoneStateGranted = phoneStateGranted,
                     requestPermissions = ::requestRuntimePermissions,
                 )
             }
@@ -44,15 +44,18 @@ class MainActivity : ComponentActivity() {
 
     private fun updatePermissionState() {
         microphoneGranted = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO,
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        phoneStateGranted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.READ_PHONE_STATE
         ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestRuntimePermissions() {
         val permissions = buildList {
             if (!microphoneGranted) add(Manifest.permission.RECORD_AUDIO)
-            // На Android 13+ разрешение влияет на видимость уведомления foreground-сервиса.
+            if (!phoneStateGranted) add(Manifest.permission.READ_PHONE_STATE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
