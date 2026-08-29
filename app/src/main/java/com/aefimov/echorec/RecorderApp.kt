@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.util.Locale
 
 /** Главный экран: запись с микрофона и локальный список завершённых файлов. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,13 +88,19 @@ fun RecorderApp(
         },
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             PermissionCard(microphoneGranted, requestPermissions)
             RecordingPanel(model, context)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Записи (${model.recordings.size})", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Записи (${model.recordings.size})",
+                    style = MaterialTheme.typography.titleLarge
+                )
                 if (model.recordings.isNotEmpty()) TextButton(model::deleteAll) { Text("Очистить") }
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -115,9 +122,18 @@ fun RecorderApp(
 private fun PermissionCard(granted: Boolean, request: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = if (granted) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)),
+        colors = CardDefaults.cardColors(
+            containerColor = if (granted) Color(0xFFE8F5E9) else Color(
+                0xFFFFF3E0
+            )
+        ),
     ) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 text = if (granted) "Микрофон: разрешён" else "Для записи нужно разрешение на микрофон",
                 modifier = Modifier.weight(1f),
@@ -130,12 +146,31 @@ private fun PermissionCard(granted: Boolean, request: () -> Unit) {
 @Composable
 private fun RecordingPanel(model: RecorderViewModel, context: android.content.Context) {
     if (!model.isRecording) {
-        Card(Modifier.fillMaxWidth()) { Text("Готов к записи с микрофона", Modifier.padding(24.dp)) }
+        Card(Modifier.fillMaxWidth()) {
+            Text(
+                "Готов к записи с микрофона",
+                Modifier.padding(24.dp)
+            )
+        }
         return
     }
-    AudioVisualizer(model.audioLevel, Modifier.fillMaxWidth().height(100.dp))
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(if (model.isPaused) "Пауза ${formatTime(model.recordingTime)}" else "Запись ${formatTime(model.recordingTime)}")
+    AudioVisualizer(
+        model.audioLevel, Modifier
+            .fillMaxWidth()
+            .height(100.dp)
+    )
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (model.isPaused) "Пауза ${formatTime(model.recordingTime)}" else "Запись ${
+                formatTime(
+                    model.recordingTime
+                )
+            }"
+        )
         Button(onClick = { model.stopRecording(context) }) {
             Icon(Icons.Default.Stop, contentDescription = null)
             Spacer(Modifier.width(6.dp))
@@ -151,19 +186,43 @@ private fun AudioVisualizer(level: Float, modifier: Modifier) {
         val width = size.width / bars
         repeat(bars) { index ->
             val height = size.height * (0.12f + level * (0.25f + (index % 5) * .15f))
-            drawRoundRect(Color(0xFF1565C0), Offset(index * width + width * .15f, (size.height - height) / 2), Size(width * .7f, height), CornerRadius(8f, 8f))
+            drawRoundRect(
+                Color(0xFF1565C0),
+                Offset(index * width + width * .15f, (size.height - height) / 2),
+                Size(width * .7f, height),
+                CornerRadius(8f, 8f)
+            )
         }
     }
 }
 
 @Composable
-private fun RecordingRow(record: Recording, playing: Boolean, play: () -> Unit, share: () -> Unit, delete: () -> Unit) {
+private fun RecordingRow(
+    record: Recording,
+    playing: Boolean,
+    play: () -> Unit,
+    share: () -> Unit,
+    delete: () -> Unit
+) {
     Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(play) { Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Воспроизвести") }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(play) {
+                Icon(
+                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    "Воспроизвести"
+                )
+            }
             Column(Modifier.weight(1f)) {
                 Text(record.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${record.date} • ${record.formattedSize} • ${formatTime(record.duration)}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "${record.date} • ${record.formattedSize} • ${formatTime(record.duration)}",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
             IconButton(share) { Icon(Icons.Default.Share, "Поделиться") }
             IconButton(delete) { Icon(Icons.Default.Delete, "Удалить") }
@@ -171,4 +230,5 @@ private fun RecordingRow(record: Recording, playing: Boolean, play: () -> Unit, 
     }
 }
 
-fun formatTime(time: Long): String = String.format("%02d:%02d", time / 60_000, (time / 1_000) % 60)
+fun formatTime(time: Long): String =
+    String.format(Locale.US, "%02d:%02d", time / 60_000, (time / 1_000) % 60)
