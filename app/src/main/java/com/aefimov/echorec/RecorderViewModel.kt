@@ -10,6 +10,11 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
 import android.widget.Toast
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -28,13 +33,13 @@ data class Recording(val id: String, val file: File, val name: String, val date:
 /** Owns MediaRecorder/MediaPlayer so a configuration change does not leak either object. */
 class RecorderViewModel(application: Application) : AndroidViewModel(application) {
     private val directory get() = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MUSIC)
-    var recordings by androidx.compose.runtime.mutableStateOf<List<Recording>>(emptyList()); private set
-    var isRecording by androidx.compose.runtime.mutableStateOf(false); private set
-    var isPaused by androidx.compose.runtime.mutableStateOf(false); private set
-    var recordingTime by androidx.compose.runtime.mutableLongStateOf(0L); private set
-    var audioLevel by androidx.compose.runtime.mutableFloatStateOf(0f); private set
-    var message by androidx.compose.runtime.mutableStateOf<String?>(null); private set
-    var playingId by androidx.compose.runtime.mutableStateOf<String?>(null); private set
+    var recordings by mutableStateOf<List<Recording>>(emptyList()); private set
+    var isRecording by mutableStateOf(false); private set
+    var isPaused by mutableStateOf(false); private set
+    var recordingTime by mutableLongStateOf(0L); private set
+    var audioLevel by mutableFloatStateOf(0f); private set
+    var message by mutableStateOf<String?>(null); private set
+    var playingId by mutableStateOf<String?>(null); private set
 
     private var recorder: MediaRecorder? = null
     private var player: MediaPlayer? = null
@@ -112,7 +117,15 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
 
     private fun startTicker() { ticker?.cancel(); ticker = viewModelScope.launch { while (isActive && isRecording) { if (!isPaused) { recordingTime = System.currentTimeMillis() - startedAt; audioLevel = (recorder?.maxAmplitude ?: 0).coerceIn(0, 32_767) / 32_767f }; delay(75) } } }
     private fun reload() { recordings = directory?.listFiles { file -> file.extension.equals("m4a", true) }?.sortedByDescending { it.lastModified() }?.map { file -> Recording(file.absolutePath, file, file.nameWithoutExtension, SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(file.lastModified())), size(file.length()), duration(file)) }.orEmpty() }
-    private fun duration(file: File): Long = runCatching { MediaMetadataRetriever().use { it.setDataSource(file.absolutePath); it.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L } }.getOrDefault(0)
+    private fun duration(file: File): Long = runCatching {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L
+        } finally {
+            retriever.release()
+        }
+    }.getOrDefault(0)
     private fun size(bytes: Long) = if (bytes < 1_048_576) String.format(Locale.US, "%.1f KB", bytes / 1024.0) else String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
     private fun notify(text: String) { message = text; Toast.makeText(getApplication(), text, Toast.LENGTH_LONG).show() }
     override fun onCleared() { ticker?.cancel(); recorder?.release(); stopPlayback() }
