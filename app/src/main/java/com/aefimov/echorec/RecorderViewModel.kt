@@ -10,6 +10,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -22,6 +23,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 
 data class Recording(
     val id: String,
@@ -33,6 +36,7 @@ data class Recording(
 )
 
 /** Owns MediaRecorder/MediaPlayer so a configuration change does not leak either object. */
+@RequiresApi(Build.VERSION_CODES.Q)
 class RecorderViewModel(application: Application) : AndroidViewModel(application) {
     private val directory get() = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MUSIC)
     var recordings by androidx.compose.runtime.mutableStateOf<List<Recording>>(emptyList()); private set
@@ -94,12 +98,18 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
 
     @Suppress("DEPRECATION")
     private fun createRecorder(source: Int, file: File): MediaRecorder =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(getApplication()) else MediaRecorder()
-            .apply {
-                setAudioSource(source); setOutputFormat(MediaRecorder.OutputFormat.MPEG_4); setAudioEncoder(
-                MediaRecorder.AudioEncoder.AAC
-            ); setAudioSamplingRate(44_100); setAudioEncodingBitRate(128_000); setOutputFile(file.absolutePath)
-            }
+        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(getApplication())
+        } else {
+            MediaRecorder()
+        }).apply {
+            setAudioSource(source)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            setAudioSamplingRate(44_100)
+            setAudioEncodingBitRate(128_000)
+            setOutputFile(file.absolutePath)
+        }
 
     fun pauseRecording() = runCatching { recorder?.pause() }.onSuccess {
         if (isRecording) {
@@ -176,6 +186,7 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun reload() {
         recordings = directory?.listFiles { file -> file.extension.equals("m4a", true) }
             ?.sortedByDescending { it.lastModified() }?.map { file ->
@@ -193,6 +204,7 @@ class RecorderViewModel(application: Application) : AndroidViewModel(application
         }.orEmpty()
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun duration(file: File): Long = runCatching {
         MediaMetadataRetriever().use {
             it.setDataSource(file.absolutePath); it.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)

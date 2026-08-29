@@ -16,6 +16,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecorderApp(
     state: ShizukuState,
